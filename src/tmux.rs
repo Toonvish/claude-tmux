@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -34,6 +35,21 @@ impl Tmux {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut sessions = Vec::new();
 
+        // One process-table snapshot shared across every pane. Used to find
+        // Claude Code by walking each pane's process subtree, which is far
+        // more reliable than tmux's `pane_current_command` (that reports
+        // `node` for node-based installs, or a child command like `bash`
+        // while Claude is running a tool).
+        let proc_table = crate::process::ProcTable::snapshot();
+
+        // All panes across all sessions, grouped by session name, in one
+        // call. Do NOT query panes per-session with `list-panes -t <name>`:
+        // that target is resolved relative to the invoking client, so a
+        // numeric session name (e.g. "1") collides with a window index and
+        // silently returns the *current* client's panes instead. `-a` avoids
+        // target resolution entirely.
+        let panes_by_session = Self::all_panes();
+
         for line in stdout.lines() {
             let parts: Vec<&str> = line.split('\t').collect();
             if parts.len() >= 4 {
@@ -43,12 +59,20 @@ impl Tmux {
                 let window_count = parts[3].parse().unwrap_or(1);
 
                 // Get panes for this session
-                let panes = Self::list_panes(&name).unwrap_or_default();
+                let panes = panes_by_session.get(&name).cloned().unwrap_or_default();
 
-                // Find every pane running claude
+                // Find every pane running claude. Prefer the process-subtree
+                // scan; fall back to `pane_current_command` only when the
+                // snapshot is unavailable (e.g. `ps` missing).
                 let claude_panes: Vec<&Pane> = panes
                     .iter()
-                    .filter(|p| p.current_command == "claude" || p.current_command.contains("claude"))
+                    .filter(|p| {
+                        if proc_table.is_empty() {
+                            crate::process::is_claude_proc(&p.current_command, "")
+                        } else {
+                            proc_table.subtree_has_claude(p.pid)
+                        }
+                    })
                     .collect();
 
                 // Emit one Session row per claude pane. Sessions with zero
@@ -123,41 +147,50 @@ impl Tmux {
         Ok(sessions)
     }
 
-    /// List all panes in a session, across every window
-    fn list_panes(session: &str) -> Result<Vec<Pane>> {
+    /// List every pane across all sessions and windows, grouped by session
+    /// name.
+    ///
+    /// Uses `list-panes -a` (all panes) rather than a per-session
+    /// `list-panes -t <name>`: the latter resolves its target relative to
+    /// the invoking client, so a numeric session name collides with a window
+    /// index and returns the current client's panes instead of the named
+    /// session's. Grouping the single `-a` listing by `#{session_name}`
+    /// sidesteps target resolution entirely.
+    fn all_panes() -> HashMap<String, Vec<Pane>> {
         let output = Command::new("tmux")
             .args([
                 "list-panes",
-                "-s",
-                "-t",
-                session,
+                "-a",
                 "-F",
-                "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{window_index}\t#{window_name}",
+                "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{window_index}\t#{window_name}\t#{pane_pid}",
             ])
-            .output()
-            .context("Failed to execute tmux list-panes")?;
+            .output();
 
-        if !output.status.success() {
-            return Ok(Vec::new());
-        }
+        let stdout = match output {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+            _ => return HashMap::new(),
+        };
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut panes = Vec::new();
+        let mut panes_by_session: HashMap<String, Vec<Pane>> = HashMap::new();
 
         for line in stdout.lines() {
             let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 5 {
-                panes.push(Pane {
-                    id: parts[0].to_string(),
-                    current_command: parts[1].to_string(),
-                    current_path: PathBuf::from(parts[2]),
-                    window_index: parts[3].to_string(),
-                    window_name: parts[4].to_string(),
-                });
+            if parts.len() >= 7 {
+                panes_by_session
+                    .entry(parts[0].to_string())
+                    .or_default()
+                    .push(Pane {
+                        id: parts[1].to_string(),
+                        current_command: parts[2].to_string(),
+                        current_path: PathBuf::from(parts[3]),
+                        window_index: parts[4].to_string(),
+                        window_name: parts[5].to_string(),
+                        pid: parts[6].parse().unwrap_or(0),
+                    });
             }
         }
 
-        Ok(panes)
+        panes_by_session
     }
 
     /// Capture the last N lines of a pane's content

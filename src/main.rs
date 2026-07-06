@@ -3,6 +3,7 @@ mod completion;
 mod detection;
 mod git;
 mod input;
+mod process;
 mod scroll_state;
 mod session;
 mod tmux;

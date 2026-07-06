@@ -43,6 +43,9 @@ impl ClaudeCodeStatus {
 pub struct Pane {
     /// Pane ID (e.g., "%0")
     pub id: String,
+    /// PID of the pane's root process (the shell), used to walk the pane's
+    /// process subtree when detecting Claude Code.
+    pub pid: i32,
     /// Current command running in the pane
     pub current_command: String,
     /// Current working directory
