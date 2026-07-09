@@ -2,9 +2,15 @@ use crate::session::ClaudeCodeStatus;
 
 /// Detect Claude Code status when content has NOT changed since the last check.
 ///
-/// Working is determined externally by content-change detection. This function
-/// only distinguishes Idle, WaitingInput, and Unknown from static content.
+/// Content-change detection (see `App::tick_status`) reports Working when the
+/// pane redraws. This function covers the case where two captures are identical
+/// while Claude is still busy: it reports Working whenever the interrupt hint is
+/// present, and otherwise distinguishes WaitingInput, Idle, and Unknown from the
+/// static content.
 pub fn detect_static_status(content: &str) -> ClaudeCodeStatus {
+    if is_working(content) {
+        return ClaudeCodeStatus::Working;
+    }
     if content.contains("[y/n]") || content.contains("[Y/n]") {
         return ClaudeCodeStatus::WaitingInput;
     }
@@ -21,13 +27,13 @@ pub fn detect_static_status(content: &str) -> ClaudeCodeStatus {
 /// Working vs Idle discrimination.
 pub fn detect_status(content: &str) -> ClaudeCodeStatus {
     if has_input_field(content) {
-        if content.contains("ctrl+c") && content.contains("to interrupt") {
+        if is_working(content) {
             return ClaudeCodeStatus::Working;
         }
         return ClaudeCodeStatus::Idle;
     }
 
-    if content.contains("ctrl+c") && content.contains("to interrupt") {
+    if is_working(content) {
         return ClaudeCodeStatus::Working;
     }
 
@@ -36,6 +42,14 @@ pub fn detect_status(content: &str) -> ClaudeCodeStatus {
     }
 
     ClaudeCodeStatus::Unknown
+}
+
+/// True when the pane shows Claude Code's interrupt hint, i.e. Claude is
+/// actively working on a task. Covers both "esc to interrupt" and
+/// "ctrl+c to interrupt" wording. The hint is pinned to the bottom of the pane
+/// while working and disappears when the task finishes or input is required.
+fn is_working(content: &str) -> bool {
+    content.contains("to interrupt")
 }
 
 /// Detect input field: prompt line (❯) with border directly above it.
@@ -89,5 +103,26 @@ mod tests {
     fn test_unknown() {
         let content = "random stuff";
         assert_eq!(detect_status(content), ClaudeCodeStatus::Unknown);
+    }
+
+    #[test]
+    fn test_static_working_with_input_box() {
+        // Interrupt hint present while the input box is on screen: Working wins
+        // over Idle even though content is unchanged between ticks.
+        let content = "✻ Thinking… (esc to interrupt)\n─────\n❯ ";
+        assert_eq!(detect_static_status(content), ClaudeCodeStatus::Working);
+    }
+
+    #[test]
+    fn test_static_idle() {
+        // Input box, no interrupt hint → Idle.
+        let content = "● Done\n─────\n❯ hello";
+        assert_eq!(detect_static_status(content), ClaudeCodeStatus::Idle);
+    }
+
+    #[test]
+    fn test_static_waiting_input() {
+        let content = "Delete files? [y/n]";
+        assert_eq!(detect_static_status(content), ClaudeCodeStatus::WaitingInput);
     }
 }

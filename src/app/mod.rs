@@ -120,7 +120,9 @@ impl App {
     /// Called on every main-loop iteration but self-throttles to run at most
     /// every 500 ms. Compares the current pane capture against the previous
     /// one: if the content changed the session is Working; if it is the same
-    /// we fall back to static text inspection for Idle / WaitingInput / Unknown.
+    /// we fall back to static text inspection, which still reports Working when
+    /// the interrupt hint is present and otherwise yields Idle / WaitingInput /
+    /// Unknown.
     pub fn tick_status(&mut self) {
         const STATUS_INTERVAL: Duration = Duration::from_millis(500);
         if self.last_status_tick.elapsed() < STATUS_INTERVAL {
