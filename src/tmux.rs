@@ -76,15 +76,30 @@ impl Tmux {
                     .collect();
 
                 // Emit one Session row per claude pane. Sessions with zero
-                // claude panes still produce a single row with no claude info.
+                // claude panes are omitted entirely: claude-tmux lists Claude
+                // Code instances, not every tmux session.
                 let multi = claude_panes.len() > 1;
 
                 if claude_panes.is_empty() {
-                    let working_directory = panes
-                        .first()
-                        .map(|p| p.current_path.clone())
-                        .unwrap_or_default();
+                    continue;
+                }
+
+                for claude_pane in claude_panes {
+                    let status = Self::capture_pane(&claude_pane.id, 15, true)
+                        .map(|content| detect_status(&content))
+                        .unwrap_or(ClaudeCodeStatus::Unknown);
+
+                    let working_directory = claude_pane.current_path.clone();
                     let git_context = GitContext::detect(&working_directory);
+
+                    let (window_label, target_window_index) = if multi {
+                        (
+                            Some(claude_pane.window_name.clone()),
+                            Some(claude_pane.window_index.clone()),
+                        )
+                    } else {
+                        (None, None)
+                    };
 
                     sessions.push(Session {
                         name: name.clone(),
@@ -93,44 +108,12 @@ impl Tmux {
                         working_directory,
                         window_count,
                         panes: panes.clone(),
-                        claude_code_pane: None,
-                        claude_code_status: ClaudeCodeStatus::Unknown,
-                        window_label: None,
-                        target_window_index: None,
+                        claude_code_pane: Some(claude_pane.id.clone()),
+                        claude_code_status: status,
+                        window_label,
+                        target_window_index,
                         git_context,
                     });
-                } else {
-                    for claude_pane in claude_panes {
-                        let status = Self::capture_pane(&claude_pane.id, 15, true)
-                            .map(|content| detect_status(&content))
-                            .unwrap_or(ClaudeCodeStatus::Unknown);
-
-                        let working_directory = claude_pane.current_path.clone();
-                        let git_context = GitContext::detect(&working_directory);
-
-                        let (window_label, target_window_index) = if multi {
-                            (
-                                Some(claude_pane.window_name.clone()),
-                                Some(claude_pane.window_index.clone()),
-                            )
-                        } else {
-                            (None, None)
-                        };
-
-                        sessions.push(Session {
-                            name: name.clone(),
-                            created,
-                            attached,
-                            working_directory,
-                            window_count,
-                            panes: panes.clone(),
-                            claude_code_pane: Some(claude_pane.id.clone()),
-                            claude_code_status: status,
-                            window_label,
-                            target_window_index,
-                            git_context,
-                        });
-                    }
                 }
             }
         }
