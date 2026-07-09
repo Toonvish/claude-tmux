@@ -8,6 +8,7 @@ mod scroll_state;
 mod session;
 mod tmux;
 mod ui;
+mod usage;
 
 use std::io::{self, stdout};
 

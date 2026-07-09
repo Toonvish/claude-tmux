@@ -91,6 +91,7 @@ impl Tmux {
 
                     let working_directory = claude_pane.current_path.clone();
                     let git_context = GitContext::detect(&working_directory);
+                    let token_usage = crate::usage::detect(&working_directory);
 
                     let (window_label, target_window_index) = if multi {
                         (
@@ -113,6 +114,7 @@ impl Tmux {
                         window_label,
                         target_window_index,
                         git_context,
+                        token_usage,
                     });
                 }
             }

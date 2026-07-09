@@ -38,6 +38,19 @@ impl ClaudeCodeStatus {
     }
 }
 
+/// Format a context-token count compactly: "532", "1.5k", "68k", "1.2M".
+fn format_token_count(n: u64) -> String {
+    if n < 1_000 {
+        format!("{}", n)
+    } else if n < 10_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else if n < 1_000_000 {
+        format!("{}k", n / 1_000)
+    } else {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    }
+}
+
 /// A tmux pane within a session
 #[derive(Debug, Clone)]
 pub struct Pane {
@@ -84,6 +97,8 @@ pub struct Session {
     pub target_window_index: Option<String>,
     /// Git context, if the working directory is a git repository
     pub git_context: Option<GitContext>,
+    /// Token usage read from the Claude Code transcript, if available
+    pub token_usage: Option<crate::usage::TokenUsage>,
 }
 
 impl Session {
@@ -110,6 +125,15 @@ impl Session {
         match &self.target_window_index {
             Some(idx) => format!("{}:{}", self.name, idx),
             None => self.name.clone(),
+        }
+    }
+
+    /// Compact human-readable context-token count for the session row
+    /// (e.g. "532", "1.5k", "68k", "1.2M"). Empty string when unknown.
+    pub fn token_display(&self) -> String {
+        match &self.token_usage {
+            Some(usage) => format_token_count(usage.context_tokens),
+            None => String::new(),
         }
     }
 
@@ -149,5 +173,18 @@ impl Session {
         } else {
             format!("{}m", minutes.max(1))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_token_counts() {
+        assert_eq!(format_token_count(532), "532");
+        assert_eq!(format_token_count(1_500), "1.5k");
+        assert_eq!(format_token_count(68_930), "68k");
+        assert_eq!(format_token_count(1_200_000), "1.2M");
     }
 }

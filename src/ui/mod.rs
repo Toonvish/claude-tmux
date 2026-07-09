@@ -265,6 +265,15 @@ fn render_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
             vec![]
         };
 
+        // Token usage column: gray normally, yellow/red as context fills up.
+        let tok = session.token_display();
+        let tok_color = match session.token_usage.as_ref().map(|u| u.percent()) {
+            Some(p) if p >= 90 => Color::Red,
+            Some(p) if p >= 70 => Color::Yellow,
+            Some(_) if is_selected => Color::Gray,
+            _ => Color::DarkGray,
+        };
+
         let mut line_spans = vec![
             Span::raw(format!(" {} ", marker)),
             Span::styled(
@@ -278,6 +287,8 @@ fn render_session_list(frame: &mut Frame, app: &mut App, area: Rect) {
                 format!("{:<8}", status.label()),
                 Style::default().fg(status_color),
             ),
+            Span::raw("  "),
+            Span::styled(format!("{:>6}", tok), Style::default().fg(tok_color)),
             Span::raw("  "),
             Span::styled(session.display_path(), Style::default().fg(path_color)),
         ];
@@ -342,6 +353,38 @@ fn render_expanded_session_content<'a>(
         Span::styled(attached_str, value_style),
     ]);
     items.push(ListItem::new(meta_line));
+
+    // Token usage row (if available)
+    if let Some(ref usage) = session.token_usage {
+        let percent = usage.percent();
+        let percent_color = if percent >= 90 {
+            Color::Red
+        } else if percent >= 70 {
+            Color::Yellow
+        } else {
+            Color::White
+        };
+
+        let mut token_spans = vec![
+            Span::raw("     "),
+            Span::styled("context: ", label_style),
+            Span::styled(session.token_display(), value_style),
+            Span::styled(" / 200k ", label_style),
+            Span::styled(
+                format!("({}%)", percent),
+                Style::default().fg(percent_color),
+            ),
+        ];
+
+        if let Some(ref model) = usage.model {
+            let short_model = model.strip_prefix("claude-").unwrap_or(model);
+            token_spans.push(Span::raw("  "));
+            token_spans.push(Span::styled("model: ", label_style));
+            token_spans.push(Span::styled(short_model.to_string(), value_style));
+        }
+
+        items.push(ListItem::new(Line::from(token_spans)));
+    }
 
     // Git metadata row (if available)
     if let Some(ref git) = session.git_context {
