@@ -1,3 +1,4 @@
+mod account;
 mod app;
 mod completion;
 mod detection;
@@ -61,6 +62,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
 
         // Refresh Claude status via content-change detection (self-throttled to 500 ms)
         app.tick_status();
+
+        // Refresh account usage from the API (off-thread, self-throttled to 60 s)
+        app.tick_account_usage();
     }
 
     Ok(())

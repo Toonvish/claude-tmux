@@ -62,6 +62,16 @@ pub struct App {
     pane_content_cache: HashMap<String, String>,
     /// Timestamp of the last status tick
     last_status_tick: Instant,
+    /// Latest account usage fetched from the Anthropic API, if available.
+    pub account_usage: Option<crate::account::AccountUsage>,
+    /// Sender handed to background account-usage fetch threads.
+    account_tx: std::sync::mpsc::Sender<Option<crate::account::AccountUsage>>,
+    /// Receiver drained each loop for completed account-usage fetches.
+    account_rx: std::sync::mpsc::Receiver<Option<crate::account::AccountUsage>>,
+    /// True while an account-usage fetch thread is in flight.
+    account_fetch_inflight: bool,
+    /// When the last account-usage fetch was kicked off (None = never).
+    last_account_fetch: Option<Instant>,
 }
 
 impl App {
@@ -73,6 +83,8 @@ impl App {
     pub fn new() -> Result<Self> {
         let sessions = Tmux::list_sessions()?;
         let current_session = Tmux::current_session()?;
+
+        let (account_tx, account_rx) = std::sync::mpsc::channel();
 
         let mut app = Self {
             sessions,
@@ -91,6 +103,11 @@ impl App {
             scroll_state: ScrollState::new(),
             pane_content_cache: HashMap::new(),
             last_status_tick: Instant::now(),
+            account_usage: None,
+            account_tx,
+            account_rx,
+            account_fetch_inflight: false,
+            last_account_fetch: None,
         };
 
         app.update_preview();
@@ -157,6 +174,38 @@ impl App {
         }
     }
 
+    /// Refresh account usage from the Anthropic API.
+    ///
+    /// Called on every main-loop iteration. The network request runs on a
+    /// background thread (bounded by a 10 s timeout) so the UI never blocks;
+    /// completed results arrive over a channel and are drained here. A new fetch
+    /// is kicked off at most once per 60 s, with at most one in flight. The last
+    /// good result is kept across transient failures so the display does not
+    /// flicker.
+    pub fn tick_account_usage(&mut self) {
+        const ACCOUNT_INTERVAL: Duration = Duration::from_secs(60);
+
+        // Drain completed fetches. Only replace on success (keep last-good).
+        while let Ok(result) = self.account_rx.try_recv() {
+            self.account_fetch_inflight = false;
+            if let Some(usage) = result {
+                self.account_usage = Some(usage);
+            }
+        }
+
+        let due = self
+            .last_account_fetch
+            .is_none_or(|t| t.elapsed() >= ACCOUNT_INTERVAL);
+        if !self.account_fetch_inflight && due {
+            self.account_fetch_inflight = true;
+            self.last_account_fetch = Some(Instant::now());
+            let tx = self.account_tx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::account::fetch());
+            });
+        }
+    }
+
     /// Clear any displayed messages
     pub fn clear_messages(&mut self) {
         self.error = None;
@@ -174,6 +223,8 @@ impl App {
     /// Refresh sessions without affecting messages (for use after git operations)
     fn refresh_sessions(&mut self) -> bool {
         self.pane_content_cache.clear();
+        // Force an account-usage refetch on the next tick.
+        self.last_account_fetch = None;
         match Tmux::list_sessions() {
             Ok(sessions) => {
                 self.sessions = sessions;

@@ -18,6 +18,9 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::account::UsageWindow;
 use crate::app::{App, Mode};
 use crate::session::ClaudeCodeStatus;
 
@@ -583,10 +586,91 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let text = format!("  {}{}", status, filter_info);
+    let left_width = text.width();
 
     let bar = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));
-
     frame.render_widget(bar, area);
+
+    // Right-aligned account usage, degrading gracefully on narrow terminals:
+    // drop reset countdowns first, then the whole segment, before it could
+    // overlap the left-hand status text.
+    if app.account_usage.is_some() {
+        let avail = area.width as usize;
+        let full = usage_summary(app, true);
+        let compact = usage_summary(app, false);
+
+        let chosen = if left_width + span_width(&full) + 2 <= avail {
+            Some(full)
+        } else if left_width + span_width(&compact) + 2 <= avail {
+            Some(compact)
+        } else {
+            None
+        };
+
+        if let Some(spans) = chosen {
+            let w = span_width(&spans) as u16;
+            let sub = Rect {
+                x: area.x + area.width.saturating_sub(w),
+                y: area.y,
+                width: w,
+                height: 1,
+            };
+            frame.render_widget(Paragraph::new(Line::from(spans)), sub);
+        }
+    }
+}
+
+/// Total display width of a run of spans.
+fn span_width(spans: &[Span]) -> usize {
+    spans.iter().map(|s| s.content.as_ref().width()).sum()
+}
+
+/// Build the right-aligned account-usage spans for the status bar.
+/// When `with_resets` is false the "(resets in …)" parentheticals are omitted.
+fn usage_summary(app: &App, with_resets: bool) -> Vec<Span<'static>> {
+    let Some(usage) = &app.account_usage else {
+        return Vec::new();
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let label = Style::default().fg(Color::DarkGray);
+
+    let windows: Vec<(&str, &UsageWindow)> = [
+        ("session", usage.session.as_ref()),
+        ("week", usage.week.as_ref()),
+    ]
+    .into_iter()
+    .filter_map(|(name, w)| w.map(|w| (name, w)))
+    .collect();
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (i, (name, w)) in windows.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", label));
+        }
+        let pct = w.percent();
+        let color = if pct < 70 {
+            Color::Green
+        } else if pct < 90 {
+            Color::Yellow
+        } else {
+            Color::Red
+        };
+        spans.push(Span::styled(format!("{} ", name), label));
+        spans.push(Span::styled(format!("{}%", pct), Style::default().fg(color)));
+        if with_resets {
+            if let Some(r) = w.resets_in(now) {
+                spans.push(Span::styled(format!(" ({})", r), label));
+            }
+        }
+    }
+    // Trailing space keeps the text off the terminal's right edge.
+    if !spans.is_empty() {
+        spans.push(Span::raw(" "));
+    }
+    spans
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
