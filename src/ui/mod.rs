@@ -662,7 +662,7 @@ fn usage_summary(app: &App, with_resets: bool) -> Vec<Span<'static>> {
         spans.push(Span::styled(format!("{}%", pct), Style::default().fg(color)));
         if with_resets {
             if let Some(r) = w.resets_in(now) {
-                spans.push(Span::styled(format!(" ({})", r), label));
+                spans.push(Span::styled(format!(" (resets {})", r), label));
             }
         }
     }
