@@ -8,7 +8,7 @@ use crate::session::ClaudeCodeStatus;
 /// present, and otherwise distinguishes WaitingInput, Idle, and Unknown from the
 /// static content.
 pub fn detect_static_status(content: &str) -> ClaudeCodeStatus {
-    if is_working(content) {
+    if is_busy(content) {
         return ClaudeCodeStatus::Working;
     }
     if content.contains("[y/n]") || content.contains("[Y/n]") {
@@ -27,13 +27,13 @@ pub fn detect_static_status(content: &str) -> ClaudeCodeStatus {
 /// Working vs Idle discrimination.
 pub fn detect_status(content: &str) -> ClaudeCodeStatus {
     if has_input_field(content) {
-        if is_working(content) {
+        if is_busy(content) {
             return ClaudeCodeStatus::Working;
         }
         return ClaudeCodeStatus::Idle;
     }
 
-    if is_working(content) {
+    if is_busy(content) {
         return ClaudeCodeStatus::Working;
     }
 
@@ -42,6 +42,19 @@ pub fn detect_status(content: &str) -> ClaudeCodeStatus {
     }
 
     ClaudeCodeStatus::Unknown
+}
+
+/// True when the pane shows any sign that Claude is busy: either its own
+/// interrupt hint, or background subagents it is waiting on.
+fn is_busy(content: &str) -> bool {
+    is_working(content) || has_background_agents(content)
+}
+
+/// True when Claude Code is waiting on background subagents ("Waiting for 2
+/// background agents to finish"). In this state the prompt still accepts input,
+/// so the interrupt hint is absent even though the session is busy.
+fn has_background_agents(content: &str) -> bool {
+    content.contains("background agent")
 }
 
 /// True when the pane shows Claude Code's interrupt hint, i.e. Claude is
@@ -118,6 +131,15 @@ mod tests {
         // Input box, no interrupt hint → Idle.
         let content = "● Done\n─────\n❯ hello";
         assert_eq!(detect_static_status(content), ClaudeCodeStatus::Idle);
+    }
+
+    #[test]
+    fn test_background_agents_are_working() {
+        // Main loop is at the prompt while subagents run: no interrupt hint,
+        // but the session is busy.
+        let content = "✻ Waiting for 2 background agents to finish\n─────\n❯ \n─────\n  ● main\n  ◯ Explore  Reading foo.rs";
+        assert_eq!(detect_status(content), ClaudeCodeStatus::Working);
+        assert_eq!(detect_static_status(content), ClaudeCodeStatus::Working);
     }
 
     #[test]

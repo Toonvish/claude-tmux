@@ -26,7 +26,7 @@ pub use mode::{
 };
 
 // Use helpers internally
-use helpers::{default_worktree_path, expand_path, sanitize_for_session_name};
+use helpers::{default_worktree_path, expand_path, hold_working, sanitize_for_session_name};
 
 /// Main application state
 pub struct App {
@@ -60,6 +60,8 @@ pub struct App {
     pub scroll_state: ScrollState,
     /// Cache of last captured content per pane ID, used for content-change status detection
     pane_content_cache: HashMap<String, String>,
+    /// When each pane last redrew, used to hold Working across quiet ticks
+    last_pane_change: HashMap<String, Instant>,
     /// Timestamp of the last status tick
     last_status_tick: Instant,
     /// Latest account usage fetched from the Anthropic API, if available.
@@ -102,6 +104,7 @@ impl App {
             pr_info: None,
             scroll_state: ScrollState::new(),
             pane_content_cache: HashMap::new(),
+            last_pane_change: HashMap::new(),
             last_status_tick: Instant::now(),
             account_usage: None,
             account_tx,
@@ -139,7 +142,9 @@ impl App {
     /// one: if the content changed the session is Working; if it is the same
     /// we fall back to static text inspection, which still reports Working when
     /// the interrupt hint is present and otherwise yields Idle / WaitingInput /
-    /// Unknown.
+    /// Unknown. A pane that redrew within `WORKING_HOLD` keeps reporting
+    /// Working, so panes that only refresh once a second - notably while
+    /// background subagents run - do not flicker between Working and Idle.
     pub fn tick_status(&mut self) {
         const STATUS_INTERVAL: Duration = Duration::from_millis(500);
         if self.last_status_tick.elapsed() < STATUS_INTERVAL {
@@ -160,16 +165,26 @@ impl App {
                 continue;
             };
 
+            let changed = self
+                .pane_content_cache
+                .get(&pane_id)
+                .is_some_and(|prev| prev != &content);
+            if changed {
+                self.last_pane_change
+                    .insert(pane_id.clone(), Instant::now());
+            }
+
             let status = match self.pane_content_cache.get(&pane_id) {
                 // Content changed since last tick → definitely working
-                Some(prev) if prev != &content => ClaudeCodeStatus::Working,
+                Some(_) if changed => ClaudeCodeStatus::Working,
                 // Content unchanged → use static text check
                 Some(_) => detect_static_status(&content),
                 // No cached entry yet → fall back to full text detection
                 None => detect_status(&content),
             };
 
-            self.sessions[idx].claude_code_status = status;
+            let since_change = self.last_pane_change.get(&pane_id).map(Instant::elapsed);
+            self.sessions[idx].claude_code_status = hold_working(status, since_change);
             self.pane_content_cache.insert(pane_id, content);
         }
     }
@@ -223,6 +238,7 @@ impl App {
     /// Refresh sessions without affecting messages (for use after git operations)
     fn refresh_sessions(&mut self) -> bool {
         self.pane_content_cache.clear();
+        self.last_pane_change.clear();
         // Force an account-usage refetch on the next tick.
         self.last_account_fetch = None;
         match Tmux::list_sessions() {
