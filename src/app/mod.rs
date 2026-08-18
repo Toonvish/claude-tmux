@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
-use crate::detection::{detect_static_status, detect_status};
+use crate::detection::{detect_static_status, detect_status, has_confirmation_prompt};
 use crate::git::{self, GitContext, PullRequestInfo};
 use crate::scroll_state::ScrollState;
 use crate::session::{ClaudeCodeStatus, Session};
@@ -174,13 +174,19 @@ impl App {
                     .insert(pane_id.clone(), Instant::now());
             }
 
-            let status = match self.pane_content_cache.get(&pane_id) {
-                // Content changed since last tick → definitely working
-                Some(_) if changed => ClaudeCodeStatus::Working,
-                // Content unchanged → use static text check
-                Some(_) => detect_static_status(&content),
-                // No cached entry yet → fall back to full text detection
-                None => detect_status(&content),
+            let status = if has_confirmation_prompt(&content) {
+                // A dialog is blocking on a keypress: it needs the user even
+                // when the pane is still redrawing behind it.
+                ClaudeCodeStatus::WaitingInput
+            } else {
+                match self.pane_content_cache.get(&pane_id) {
+                    // Content changed since last tick → definitely working
+                    Some(_) if changed => ClaudeCodeStatus::Working,
+                    // Content unchanged → use static text check
+                    Some(_) => detect_static_status(&content),
+                    // No cached entry yet → fall back to full text detection
+                    None => detect_status(&content),
+                }
             };
 
             let since_change = self.last_pane_change.get(&pane_id).map(Instant::elapsed);
